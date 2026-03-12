@@ -1,0 +1,273 @@
+# ============================================================================
+# Dify 社区版 Docker Compose —— 对接 LangGraph FastAPI (OpenAI 兼容 /v1 接口)
+# ============================================================================
+#
+# 🚀 使用方式：
+#   1. 确认宿主机上 LangGraph FastAPI 已在 8000 端口运行
+#      uvicorn agent.main:app --host 0.0.0.0 --port 8000
+#   2. docker compose up -d
+#   3. 浏览器访问 http://localhost:1001  完成 Dify 初始化
+#   4. 进入 Dify「设置 → 模型供应商」添加 OpenAI-API-compatible 供应商：
+#      - 模型名称:  填你在 OLLAMA_MODEL_NAME 中配置的名称 (如 qwen3:32b)
+#      - API Key:   任意值 (如 sk-dummy-key，FastAPI 未做鉴权)
+#      - API URL:   http://host.docker.internal:8000/v1
+#   5. 在应用编排中选择上述模型即可对话
+#
+# ⚠️ 注意事项：
+#   - host.docker.internal 仅适用于 Docker Desktop (Windows/Mac)
+#     Linux 请使用宿主机局域网 IP 或添加 extra_hosts 映射
+#   - 生产环境请修改 SECRET_KEY、数据库密码等敏感配置
+#   - Dify 镜像版本可按需升级，此处使用 1.3.1 (截至 2026-03)
+# ============================================================================
+
+x-shared-env: &shared-api-env
+  # ---- 核心配置 ----
+  MODE: api
+  LOG_LEVEL: INFO
+  LOG_FILE: /app/logs/server.log
+  SECRET_KEY: sk-dify-langgraph-secret-change-me    # ⚠️ 生产环境请修改
+  CONSOLE_WEB_URL: http://localhost:1001
+  CONSOLE_API_URL: http://localhost:1001
+  SERVICE_API_URL: http://localhost:1001
+  APP_WEB_URL: http://localhost:1001
+
+  # ---- 数据库 ----
+  DB_USERNAME: dify
+  DB_PASSWORD: dify_pass_2026
+  DB_HOST: db
+  DB_PORT: 5432
+  DB_DATABASE: dify
+
+  # ---- Redis ----
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  REDIS_PASSWORD: dify_redis_2026
+  REDIS_DB: 0
+
+  # ---- 存储 (本地) ----
+  STORAGE_TYPE: local
+  STORAGE_LOCAL_PATH: /app/api/storage
+
+  # ---- 向量数据库 (Weaviate) ----
+  VECTOR_STORE: weaviate
+  WEAVIATE_ENDPOINT: http://weaviate:8080
+  WEAVIATE_API_KEY: WVF5YThaHlkYwhGUSmCRgsX3tD5ngdN8pkih
+
+  # ---- Celery (异步任务) ----
+  CELERY_BROKER_URL: redis://:dify_redis_2026@redis:6379/1
+
+  # ---- 代码沙箱 ----
+  CODE_EXECUTION_ENDPOINT: http://sandbox:8194
+  CODE_EXECUTION_API_KEY: dify-sandbox-2026
+  CODE_MAX_NUMBER: 9999999999999
+  CODE_MIN_NUMBER: -9999999999999
+  CODE_MAX_STRING_LENGTH: 80000
+
+  # ---- 插件守护进程 ----
+  PLUGIN_DAEMON_URL: http://plugin-daemon:5002
+  PLUGIN_DAEMON_KEY: dify-plugin-daemon-key-2026
+  INNER_API_KEY_FOR_PLUGIN: dify-inner-api-key-2026
+
+  # ---- 数据库迁移 ----
+  MIGRATION_ENABLED: "true"
+
+  # ---- SSRF 代理 ----
+  SSRF_PROXY_HTTP_URL: http://ssrf-proxy:3128
+  SSRF_PROXY_HTTPS_URL: http://ssrf-proxy:3128
+
+services:
+  # ===================== Dify Plugin Daemon (插件守护进程) =====================
+  plugin-daemon:
+    image: langgenius/dify-plugin-daemon:0.1.1-local
+    container_name: dify-plugin-daemon
+    restart: unless-stopped
+    environment:
+      # ---- 服务端口 ----
+      SERVER_PORT: 5002
+      SERVER_KEY: dify-plugin-daemon-key-2026
+      # ---- Dify 内部通信 ----
+      DIFY_INNER_API_URL: http://api:5001
+      DIFY_INNER_API_KEY: dify-inner-api-key-2026
+      # ---- 数据库 ----
+      DB_USERNAME: dify
+      DB_PASSWORD: dify_pass_2026
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: dify_plugin
+      # ---- Redis ----
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: dify_redis_2026
+      # ---- 存储 ----
+      STORAGE_TYPE: local
+      STORAGE_LOCAL_PATH: /app/storage
+      PLUGIN_STORAGE_PATH: /app/storage/plugins
+      PLUGIN_WORKING_PATH: /app/storage/cwd
+      PLUGIN_INSTALLED_PATH: /app/storage/plugin
+      PLUGIN_MEDIA_CACHE_PATH: /app/storage/plugin_media_cache
+      # ---- 其他 ----
+      PERSISTENCE_STORAGE_TYPE: postgres
+      ROUTINE_POOL_SIZE: 100
+      MAX_PLUGIN_PACKAGE_SIZE: 52428800
+      # ---- 插件远程安装 ----
+      PLUGIN_REMOTE_INSTALLING_HOST: 0.0.0.0
+      PLUGIN_REMOTE_INSTALLING_PORT: 5003
+      PLUGIN_REMOTE_INSTALLING_ENABLED: "true"
+      PLUGIN_REMOTE_INSTALLING_MAX_CONN: 100
+      PLUGIN_REMOTE_INSTALLING_MAX_SINGLE_TENANT_CONN: 10
+      PIP_MIRROR_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    volumes:
+      - dify-plugin-storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ===================== Dify API 服务 =====================
+  api:
+    image: langgenius/dify-api:1.3.1
+    container_name: dify-api
+    restart: unless-stopped
+    environment:
+      <<: *shared-api-env
+      MODE: api
+    volumes:
+      - dify-storage:/app/api/storage
+      - dify-logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      plugin-daemon:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ===================== Dify Worker (异步任务) =====================
+  worker:
+    image: langgenius/dify-api:1.3.1
+    container_name: dify-worker
+    restart: unless-stopped
+    environment:
+      <<: *shared-api-env
+      MODE: worker
+    volumes:
+      - dify-storage:/app/api/storage
+      - dify-logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ===================== Dify Web 前端 =====================
+  web:
+    image: langgenius/dify-web:1.3.1
+    container_name: dify-web
+    restart: unless-stopped
+    environment:
+      CONSOLE_API_URL: http://localhost:1001
+      APP_API_URL: http://localhost:1001
+      SENTRY_DSN: ""
+
+  # ===================== Nginx 反向代理 =====================
+  nginx:
+    image: nginx:alpine
+    container_name: dify-nginx
+    restart: unless-stopped
+    ports:
+      - "1001:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ===================== PostgreSQL 数据库 =====================
+  db:
+    image: postgres:16-alpine
+    container_name: dify-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dify
+      POSTGRES_PASSWORD: dify_pass_2026
+      POSTGRES_DB: dify
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - dify-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dify"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===================== Redis =====================
+  redis:
+    image: redis:7-alpine
+    container_name: dify-redis
+    restart: unless-stopped
+    command: redis-server --requirepass dify_redis_2026 --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - dify-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "dify_redis_2026", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ===================== Weaviate 向量数据库 =====================
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.19.0
+    container_name: dify-weaviate
+    restart: unless-stopped
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "false"
+      AUTHENTICATION_APIKEY_ENABLED: "true"
+      AUTHENTICATION_APIKEY_ALLOWED_KEYS: "WVF5YThaHlkYwhGUSmCRgsX3tD5ngdN8pkih"
+      AUTHENTICATION_APIKEY_USERS: "hello@dify.ai"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      CLUSTER_HOSTNAME: node1
+      AUTHORIZATION_ADMINLIST_ENABLED: "true"
+      AUTHORIZATION_ADMINLIST_USERS: "hello@dify.ai"
+    volumes:
+      - dify-weaviate-data:/var/lib/weaviate
+
+  # ===================== 代码执行沙箱 =====================
+  sandbox:
+    image: langgenius/dify-sandbox:0.2.10
+    container_name: dify-sandbox
+    restart: unless-stopped
+    environment:
+      API_KEY: dify-sandbox-2026
+      GIN_MODE: release
+      WORKER_TIMEOUT: 15
+      ENABLE_NETWORK: "true"
+      SANDBOX_PORT: 8194
+      HTTP_PROXY: http://ssrf-proxy:3128
+      HTTPS_PROXY: http://ssrf-proxy:3128
+
+  # ===================== SSRF 防护代理 =====================
+  ssrf-proxy:
+    image: ubuntu/squid:latest
+    container_name: dify-ssrf-proxy
+    restart: unless-stopped
+    volumes:
+      - ./ssrf-proxy/squid.conf:/etc/squid/squid.conf:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  dify-storage:
+  dify-logs:
+  dify-db-data:
+  dify-redis-data:
+  dify-weaviate-data:
+  dify-plugin-storage:

@@ -106,7 +106,7 @@ async def call_model(state: State, runtime: Runtime[Context]) -> Dict[str, Any]:
 
     messages = system_messages + messages
 
-    log.info(f"调用模型，输入消息是: {messages}")
+    # log.info(f"调用模型，输入消息是: {messages}")
 
     response = await llm_with_tools.ainvoke(messages)
     return {"messages": [response]}

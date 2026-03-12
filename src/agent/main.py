@@ -11,9 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from agent.api.chat import router as chat_router
 from agent.api.openai_compatible import router as openai_router
-from agent.api.schemas import HealthResponse
 from agent.utils.log_utils import log
 
 
@@ -33,13 +31,13 @@ app = FastAPI(
 )
 
 # ---- 跨域配置 ----
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],          # 生产环境请替换为具体域名
-#     allow_credentials=True,
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # 生产环境请替换为具体域名
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---- 注册路由 ----
 # app.include_router(chat_router, prefix="/api")
@@ -52,8 +50,3 @@ async def root():
     """根路由，返回 API 基本信息。"""
     return {"message": "LangGraph Agent API", "docs": "/docs"}
 
-
-@app.get("/health", response_model=HealthResponse, summary="健康检查")
-async def health_check():
-    """健康检查接口。"""
-    return HealthResponse()
